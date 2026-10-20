@@ -57,12 +57,10 @@ export async function processarTransicaoEmMassa(data: TransicaoInput) {
   }
 
   try {
-    // 1. Busca TODOS os cargos para saber a precedência real de todo mundo (incluindo cursos)
     const todosCargos = await prisma.cargo.findMany({
       orderBy: { precedencia: "asc" },
     });
 
-    // 2. Cria uma lista apenas com a carreira real (exclui cursos)
     const cargosDeCarreira = todosCargos.filter((c) => c.tipo !== "CURSO");
 
     const alunosBrutos = await prisma.perfilAluno.findMany({
@@ -84,7 +82,6 @@ export async function processarTransicaoEmMassa(data: TransicaoInput) {
       const conceitoNovo = 7.0;
       const notaDesempate = 10 - i * 0.01;
 
-      // Descobre o cargo atual do aluno na lista completa
       const cargoAtualObj = todosCargos.find((c) => c.id === aluno.cargoId);
       if (!cargoAtualObj) continue;
 
@@ -92,10 +89,8 @@ export async function processarTransicaoEmMassa(data: TransicaoInput) {
         if (data.cargoDestinoId) {
           novoCargoId = data.cargoDestinoId;
         } else {
-          // Inverte a lista de carreira para buscar de baixo para cima (ex: 160, 150, 130...)
           const carreiraInvertida = [...cargosDeCarreira].reverse();
           
-          // Encontra o primeiro cargo de carreira com precedência menor (maior patente)
           const proximo = carreiraInvertida.find(
             (c) => c.precedencia < cargoAtualObj.precedencia
           );
@@ -105,7 +100,6 @@ export async function processarTransicaoEmMassa(data: TransicaoInput) {
         if (data.cargoDestinoId) {
           novoCargoId = data.cargoDestinoId;
         } else {
-          // Busca de cima para baixo o primeiro cargo com precedência maior (menor patente)
           const inferior = cargosDeCarreira.find(
             (c) => c.precedencia > cargoAtualObj.precedencia
           );
@@ -267,7 +261,7 @@ export async function calcularVagasDisponiveis() {
 
 export async function efetivarPromocoesDoCiclo(
   cicloId: string,
-  promocoes: { alunoId: string; novoCargoId: string }[],
+  promocoes: { alunoId: string; novoCargoId: string; modalidade?: string }[],
 ) {
   const admin = await getCurrentUserWithRelations();
 
@@ -280,6 +274,11 @@ export async function efetivarPromocoesDoCiclo(
       where: { tipo: { not: "CURSO" } },
     });
 
+    const candidatosCiclo = await prisma.candidatoCiclo.findMany({
+      where: { cicloId },
+      select: { alunoId: true, modalidade: true },
+    });
+
     const dataReferencia = new Date();
     const operations = [];
     const notificacoesPendentes = [];
@@ -289,6 +288,11 @@ export async function efetivarPromocoesDoCiclo(
       const cargoNovoObj = todosCargos.find((c) => c.id === p.novoCargoId);
 
       if (!cargoNovoObj) continue;
+
+      const modalidadeReal =
+        p.modalidade ||
+        candidatosCiclo.find((c) => c.alunoId === p.alunoId)?.modalidade ||
+        "ANTIGUIDADE";
 
       const notaDesempate = 10 - i * 0.01;
 
@@ -315,7 +319,7 @@ export async function efetivarPromocoesDoCiclo(
             tipoPromocao: "AUTOMATICA",
             dataInicio: dataReferencia,
             cicloId: cicloId,
-            motivo: "Promoção por Ciclo de Avaliação",
+            motivo: `Promoção por Ciclo de Avaliação (${modalidadeReal})`,
           },
         }),
       );
@@ -328,7 +332,7 @@ export async function efetivarPromocoesDoCiclo(
             conceitoAtual: "7.0",
             foraDeData: false,
             dataUltimaPromocao: dataReferencia,
-            modalidadeUltimaPromocao: "CICLO_PROMOCAO",
+            modalidadeUltimaPromocao: modalidadeReal,
             notaDesempatePromocao: notaDesempate,
           },
         }),
@@ -419,8 +423,8 @@ function normalizarModalidade(modalidade: string): string {
     .trim()
     .toUpperCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // Remove acentos
-    .replace(/[\s\-]+/g, "_"); // Troca espaços e hífens por underline
+    .replace(/[\u0300-\u036f]/g, "") 
+    .replace(/[\s\-]+/g, "_");
 }
 
 export async function gerarQuadroDeAcesso(cicloId: string) {
@@ -463,7 +467,6 @@ export async function gerarQuadroDeAcesso(cicloId: string) {
           (1000 * 60 * 60 * 24 * 30.43),
       );
 
-      // Alunos sem regras cadastradas no cargo atual entram como INAPTO nas modalidades
       if (regrasDesteCargo.length === 0) {
         for (const mod of modalidadesExistentes) {
           inaptosGerais.push({
@@ -567,7 +570,6 @@ export async function gerarQuadroDeAcesso(cicloId: string) {
         (c) => c.modalidade === mod,
       );
 
-      // Limite de Vagas APENAS para Antiguidade. As outras modalidades são ilimitadas!
       if (mod === "ANTIGUIDADE") {
         aptosDestaModalidade.sort(
           (a, b) =>
